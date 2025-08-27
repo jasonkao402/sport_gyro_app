@@ -65,8 +65,8 @@ class _RecorderPageState extends State<RecorderPage> {
   String? _lastSavedPath;
 
   Timer? _sampleTimer;
-  final int _targetHz = 60;
-  final double _durationSec = 5.0; // 錄製秒數
+  int _targetHz = 60;
+  double _durationSec = 5.0; // 錄製秒數
 
   @override
   void initState() {
@@ -75,13 +75,13 @@ class _RecorderPageState extends State<RecorderPage> {
   }
 
   void _startListeningStreams() {
-    _accSub ??= accelerometerEvents.listen((event) {
+    _accSub ??= accelerometerEventStream().listen((event) {
       _latestAcc = event;
     });
-    _gyroSub ??= gyroscopeEvents.listen((event) {
+    _gyroSub ??= gyroscopeEventStream().listen((event) {
       _latestGyro = event;
     });
-    _magSub ??= magnetometerEvents.listen((event) {
+    _magSub ??= magnetometerEventStream().listen((event) {
       _latestMag = event;
     });
   }
@@ -116,14 +116,16 @@ class _RecorderPageState extends State<RecorderPage> {
       'gyro_z',
       'mag_x',
       'mag_y',
-      'mag_z'
+      'mag_z',
     ]);
 
     final stopwatch = Stopwatch()..start();
     final intervalMicros = (1000000 / _targetHz).round(); // 約 16667
 
     // 使用 Timer.periodic 做穩定採樣
-    _sampleTimer = Timer.periodic(Duration(microseconds: intervalMicros), (timer) {
+    _sampleTimer = Timer.periodic(Duration(microseconds: intervalMicros), (
+      timer,
+    ) {
       final now = DateTime.now().toUtc();
       final epochMs = now.millisecondsSinceEpoch;
 
@@ -143,7 +145,7 @@ class _RecorderPageState extends State<RecorderPage> {
         (gyro?.z.toStringAsFixed(6)) ?? 'NaN',
         (mag?.x.toStringAsFixed(6)) ?? 'NaN',
         (mag?.y.toStringAsFixed(6)) ?? 'NaN',
-        (mag?.z.toStringAsFixed(6)) ?? 'NaN'
+        (mag?.z.toStringAsFixed(6)) ?? 'NaN',
       ]);
 
       _sampleCount = _rows.length - 1; // exclude header
@@ -159,43 +161,34 @@ class _RecorderPageState extends State<RecorderPage> {
     });
   }
 
-  Future<void> _finishRecording() async {
-    _sampleTimer?.cancel();
-    _sampleTimer = null;
+  Future<void> _shareCsv() async {
+    if (_lastSavedPath == null) return;
+    await Share.shareXFiles([XFile(_lastSavedPath!)]);
+  }
 
-    // 產生 CSV 字串
+  Future<void> _finishRecording() async {
+    setState(() {
+      _isRecording = false;
+    });
+
+    // 將 _rows 轉成 CSV 字串
     final csvBuffer = StringBuffer();
     for (final row in _rows) {
-      // 簡單 escape：若資料內含逗號會被包起來
-      final escaped = row.map((s) {
-        if (s.contains(',')) return '"${s.replaceAll('"', '""')}"';
-        return s;
-      }).join(',');
-      csvBuffer.writeln(escaped);
+      csvBuffer.writeln(row.join(','));
     }
 
-    // 寫入檔案
+    // 取得 app 文件目錄
     final dir = await getApplicationDocumentsDirectory();
-    final filename = 'sensor_record_${DateTime.now().toIso8601String().replaceAll(':', '-').replaceAll('.', '-')}.csv';
+    final now = DateTime.now();
+    final filename =
+        'sensor_${now.toIso8601String().replaceAll(':', '').replaceAll('.', '')}.csv';
     final file = File('${dir.path}/$filename');
+
     await file.writeAsString(csvBuffer.toString());
 
     setState(() {
-      _isRecording = false;
       _lastSavedPath = file.path;
     });
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('記錄完成：共 $_sampleCount 筆資料，已存為 $filename'),
-        duration: const Duration(seconds: 3),
-      ));
-    }
-  }
-
-  Future<void> _shareCsv() async {
-    if (_lastSavedPath == null) return;
-    await Share.shareXFiles([XFile(_lastSavedPath!)], text: 'Sensor CSV data');
   }
 
   @override
@@ -221,26 +214,89 @@ class _RecorderPageState extends State<RecorderPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('狀態：${_isRecording ? '錄製中...' : '閒置'}', style: const TextStyle(fontSize: 16)),
-            const SizedBox(height: 8),
-            LinearProgressIndicator(
-              value: _isRecording ? (_sampleCount / (_targetHz * _durationSec)) : 0.0,
-              minHeight: 8,
+            Text(
+              '狀態：${_isRecording ? '錄製中...' : '閒置'}',
+              style: const TextStyle(fontSize: 16),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 8),
             Row(
               children: [
                 ElevatedButton(
                   onPressed: _isRecording ? null : _startRecording,
-                  child: const Text('Start 5s'),
+                  child: const Text('Start Recording'),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 8),
                 ElevatedButton(
                   onPressed: (_lastSavedPath != null) ? _shareCsv : null,
                   child: const Text('Share CSV'),
                 ),
               ],
             ),
+            const SizedBox(height: 12),
+            LinearProgressIndicator(
+              value: _isRecording
+                  ? (_sampleCount / (_targetHz * _durationSec))
+                  : 0.0,
+              minHeight: 8,
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                // targetHz input
+                const Text('Hz：'),
+                SizedBox(
+                  width: 60,
+                  child: TextFormField(
+                    enabled: !_isRecording,
+                    initialValue: _targetHz.toString(),
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(
+                        vertical: 8,
+                        horizontal: 8,
+                      ),
+                    ),
+                    onChanged: (val) {
+                      final parsed = int.tryParse(val);
+                      if (parsed != null && parsed >= 60 && parsed <= 500) {
+                        setState(() {
+                          _targetHz = parsed;
+                        });
+                      }
+                    },
+                  ),
+                ),
+                const Text(' (60~500)'),
+                const SizedBox(width: 16),
+                // input seconds
+                SizedBox(
+                  width: 60,
+                  child: TextFormField(
+                    enabled: !_isRecording,
+                    initialValue: _durationSec.toString(),
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(
+                        vertical: 8,
+                        horizontal: 8,
+                      ),
+                    ),
+                    onChanged: (val) {
+                      final parsed = int.tryParse(val);
+                      if (parsed != null && parsed > 0) {
+                        setState(() {
+                          _durationSec = parsed.toDouble();
+                        });
+                      }
+                    },
+                  ),
+                ),
+                const Text(' (秒)'),
+              ],
+            ),
+
             const SizedBox(height: 16),
             Text('樣本數：$_sampleCount / ${(_targetHz * _durationSec).round()}'),
             const SizedBox(height: 12),
@@ -249,19 +305,30 @@ class _RecorderPageState extends State<RecorderPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('最新感測器讀值：', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const Text(
+                      '最新感測器讀值：',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
                     const SizedBox(height: 8),
-                    Text('Accelerometer: x=${acc?.x.toStringAsFixed(4) ?? 'N/A'}, y=${acc?.y.toStringAsFixed(4) ?? 'N/A'}, z=${acc?.z.toStringAsFixed(4) ?? 'N/A'}'),
+                    Text(
+                      'Accelerometer:\nx=${acc?.x.toStringAsFixed(4) ?? 'N/A'}, y=${acc?.y.toStringAsFixed(4) ?? 'N/A'}, z=${acc?.z.toStringAsFixed(4) ?? 'N/A'}',
+                    ),
                     const SizedBox(height: 6),
-                    Text('Gyroscope: x=${gyro?.x.toStringAsFixed(4) ?? 'N/A'}, y=${gyro?.y.toStringAsFixed(4) ?? 'N/A'}, z=${gyro?.z.toStringAsFixed(4) ?? 'N/A'}'),
+                    Text(
+                      'Gyroscope:\nx=${gyro?.x.toStringAsFixed(4) ?? 'N/A'}, y=${gyro?.y.toStringAsFixed(4) ?? 'N/A'}, z=${gyro?.z.toStringAsFixed(4) ?? 'N/A'}',
+                    ),
                     const SizedBox(height: 6),
-                    Text('Magnetometer: x=${mag?.x.toStringAsFixed(4) ?? 'N/A'}, y=${mag?.y.toStringAsFixed(4) ?? 'N/A'}, z=${mag?.z.toStringAsFixed(4) ?? 'N/A'}'),
+                    Text(
+                      'Magnetometer:\nx=${mag?.x.toStringAsFixed(4) ?? 'N/A'}, y=${mag?.y.toStringAsFixed(4) ?? 'N/A'}, z=${mag?.z.toStringAsFixed(4) ?? 'N/A'}',
+                    ),
                     const SizedBox(height: 16),
                     Text('最後輸出： ${_lastSavedPath ?? "尚未產生"}'),
                   ],
                 ),
               ),
             ),
+
+            // const SizedBox(height: 16),
           ],
         ),
       ),
