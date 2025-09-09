@@ -210,17 +210,23 @@ class _RecorderPageState extends State<RecorderPage> {
     }
 
     // 取得 app 文件目錄
-    final dir = await getExternalStorageDirectory();
+    final dir = await getApplicationDocumentsDirectory();
     final now = DateTime.now();
     final filename =
         'sensor_${now.toIso8601String().replaceAll(':', '').replaceAll('.', '')}.csv';
-    final file = File('${dir?.path}/$filename');
+    final file = File('${dir.path}/$filename');
 
     await file.writeAsString(csvBuffer.toString());
 
     setState(() {
       _lastSavedPath = file.path;
     });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('CSV saved: ${file.path}')),
+      );
+    }
   }
 
   @override
@@ -355,14 +361,10 @@ class _RecorderPageState extends State<RecorderPage> {
                     Text(
                       'Magnetometer:\nx=${mag?.x.toStringAsFixed(4) ?? 'N/A'}, y=${mag?.y.toStringAsFixed(4) ?? 'N/A'}, z=${mag?.z.toStringAsFixed(4) ?? 'N/A'}',
                     ),
-                    const SizedBox(height: 16),
-                    Text('最後輸出： ${_lastSavedPath ?? "尚未產生"}'),
                   ],
                 ),
               ),
             ),
-
-            // const SizedBox(height: 16),
           ],
         ),
       ),
