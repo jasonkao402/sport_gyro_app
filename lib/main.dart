@@ -14,6 +14,7 @@
 
 import 'dart:async';
 import 'dart:io';
+// import 'dart:nativewrappers/_internal/vm/lib/ffi_native_type_patch.dart';
 import 'package:flutter/material.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:path_provider/path_provider.dart';
@@ -32,7 +33,7 @@ class SensorRecorderApp extends StatelessWidget {
       title: 'IMU Sensor Recorder',
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.pink),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.lightBlue),
       ),
       home: const RecorderPage(),
     );
@@ -61,6 +62,7 @@ class _RecorderPageState extends State<RecorderPage> {
   final List<List<String>> _rows = [];
 
   bool _isRecording = false;
+  bool _isMonitoring = false;
   int _sampleCount = 0;
   String? _lastSavedPath;
 
@@ -75,15 +77,25 @@ class _RecorderPageState extends State<RecorderPage> {
   }
 
   void _startListeningStreams() {
-    _accSub ??= accelerometerEventStream().listen((event) {
-      _latestAcc = event;
-    });
-    _gyroSub ??= gyroscopeEventStream().listen((event) {
-      _latestGyro = event;
-    });
-    _magSub ??= magnetometerEventStream().listen((event) {
-      _latestMag = event;
-    });
+    // final intervalMicros = (1000000 / _targetHz).round();
+    _accSub =
+        accelerometerEventStream(
+          samplingPeriod: SensorInterval.gameInterval,
+        ).listen((event) {
+          _latestAcc = event;
+        });
+    _gyroSub =
+        gyroscopeEventStream(
+          samplingPeriod: SensorInterval.gameInterval,
+        ).listen((event) {
+          _latestGyro = event;
+        });
+    _magSub =
+        magnetometerEventStream(
+          samplingPeriod: SensorInterval.gameInterval,
+        ).listen((event) {
+          _latestMag = event;
+        });
   }
 
   void _stopListeningStreams() {
@@ -93,6 +105,27 @@ class _RecorderPageState extends State<RecorderPage> {
     _accSub = null;
     _gyroSub = null;
     _magSub = null;
+  }
+
+  Future<void> _startMonitoring() async {
+    if (_isMonitoring) return;
+    setState(() {
+      _isMonitoring = true;
+      _sampleCount = 0;
+    });
+    final stopwatch = Stopwatch()..start();
+    final uiInterval = (1000 / 30).round();
+    _sampleTimer = Timer.periodic(Duration(milliseconds: uiInterval), (timer) {
+      // 更新 UI
+      if (mounted) setState(() {});
+      if (stopwatch.elapsedMilliseconds >= (_durationSec * 1000).round()) {
+        timer.cancel();
+        stopwatch.stop();
+        setState(() {
+          _isMonitoring = false;
+        });
+      }
+    });
   }
 
   Future<void> _startRecording() async {
@@ -120,8 +153,7 @@ class _RecorderPageState extends State<RecorderPage> {
     ]);
 
     final stopwatch = Stopwatch()..start();
-    final intervalMicros = (1000000 / _targetHz).round(); // 約 16667
-
+    final intervalMicros = (1000000 / _targetHz).round();
     // 使用 Timer.periodic 做穩定採樣
     _sampleTimer = Timer.periodic(Duration(microseconds: intervalMicros), (
       timer,
@@ -178,11 +210,11 @@ class _RecorderPageState extends State<RecorderPage> {
     }
 
     // 取得 app 文件目錄
-    final dir = await getApplicationDocumentsDirectory();
+    final dir = await getExternalStorageDirectory();
     final now = DateTime.now();
     final filename =
         'sensor_${now.toIso8601String().replaceAll(':', '').replaceAll('.', '')}.csv';
-    final file = File('${dir.path}/$filename');
+    final file = File('${dir?.path}/$filename');
 
     await file.writeAsString(csvBuffer.toString());
 
@@ -219,18 +251,21 @@ class _RecorderPageState extends State<RecorderPage> {
               style: const TextStyle(fontSize: 16),
             ),
             const SizedBox(height: 8),
-            Row(
-              children: [
-                ElevatedButton(
-                  onPressed: _isRecording ? null : _startRecording,
-                  child: const Text('Start Recording'),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: (_lastSavedPath != null) ? _shareCsv : null,
-                  child: const Text('Share CSV'),
-                ),
-              ],
+            ElevatedButton(
+              onPressed: _isRecording ? null : _startRecording,
+              child: const Text('Start Recording'),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              onPressed: _isMonitoring ? null : _startMonitoring,
+              child: Text(
+                _isMonitoring ? 'Stop Monitoring' : 'Start Monitoring',
+              ),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              onPressed: (_lastSavedPath != null) ? _shareCsv : null,
+              child: const Text('Share CSV'),
             ),
             const SizedBox(height: 12),
             LinearProgressIndicator(
@@ -240,63 +275,62 @@ class _RecorderPageState extends State<RecorderPage> {
               minHeight: 8,
             ),
             const SizedBox(height: 16),
-            Row(
-              children: [
-                // targetHz input
-                const Text('Hz：'),
-                SizedBox(
-                  width: 60,
-                  child: TextFormField(
-                    enabled: !_isRecording,
-                    initialValue: _targetHz.toString(),
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(
-                        vertical: 8,
-                        horizontal: 8,
-                      ),
-                    ),
-                    onChanged: (val) {
-                      final parsed = int.tryParse(val);
-                      if (parsed != null && parsed >= 60 && parsed <= 500) {
-                        setState(() {
-                          _targetHz = parsed;
-                        });
-                      }
-                    },
+            // Row(
+            //   children: [
+            // targetHz input
+            const Text('Sample Rate (Hz) (5~500):'),
+            SizedBox(
+              width: 60,
+              child: TextFormField(
+                enabled: !_isRecording,
+                initialValue: _targetHz.toString(),
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(
+                    vertical: 8,
+                    horizontal: 8,
                   ),
                 ),
-                const Text(' (60~500)'),
-                const SizedBox(width: 16),
-                // input seconds
-                SizedBox(
-                  width: 60,
-                  child: TextFormField(
-                    enabled: !_isRecording,
-                    initialValue: _durationSec.toString(),
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(
-                        vertical: 8,
-                        horizontal: 8,
-                      ),
-                    ),
-                    onChanged: (val) {
-                      final parsed = int.tryParse(val);
-                      if (parsed != null && parsed > 0) {
-                        setState(() {
-                          _durationSec = parsed.toDouble();
-                        });
-                      }
-                    },
+                onChanged: (val) {
+                  final parsed = int.tryParse(val);
+                  if (parsed != null && parsed >= 5 && parsed <= 500) {
+                    setState(() {
+                      _targetHz = parsed;
+                    });
+                  }
+                },
+              ),
+            ),
+            const SizedBox(width: 16),
+            // input seconds
+            const Text('Record Duration (seconds):'),
+            SizedBox(
+              width: 60,
+              child: TextFormField(
+                enabled: !_isRecording,
+                initialValue: _durationSec.toString(),
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(
+                    vertical: 8,
+                    horizontal: 8,
                   ),
                 ),
-                const Text(' (秒)'),
-              ],
+                onChanged: (val) {
+                  final parsed = double.tryParse(val);
+                  if (parsed != null && parsed > 0) {
+                    setState(() {
+                      _durationSec = parsed.toDouble();
+                    });
+                  }
+                },
+              ),
             ),
 
+            //   ],
+            // ),
             const SizedBox(height: 16),
             Text('樣本數：$_sampleCount / ${(_targetHz * _durationSec).round()}'),
             const SizedBox(height: 12),
@@ -306,7 +340,7 @@ class _RecorderPageState extends State<RecorderPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      '最新感測器讀值：',
+                      'Sensor Values:',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 8),
