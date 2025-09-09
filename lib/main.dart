@@ -195,7 +195,12 @@ class _RecorderPageState extends State<RecorderPage> {
 
   Future<void> _shareCsv() async {
     if (_lastSavedPath == null) return;
-    await Share.shareXFiles([XFile(_lastSavedPath!)]);
+    final params = ShareParams(
+      text: 'Here is the recorded sensor data.',
+      files: [XFile(_lastSavedPath!)],
+    );
+    await SharePlus.instance.share(params);
+    // await Share.shareXFiles([XFile(_lastSavedPath!)]);
   }
 
   Future<void> _finishRecording() async {
@@ -281,9 +286,6 @@ class _RecorderPageState extends State<RecorderPage> {
               minHeight: 8,
             ),
             const SizedBox(height: 16),
-            // Row(
-            //   children: [
-            // targetHz input
             const Text('Sample Rate (Hz) (5~500):'),
             SizedBox(
               width: 60,
@@ -334,9 +336,6 @@ class _RecorderPageState extends State<RecorderPage> {
                 },
               ),
             ),
-
-            //   ],
-            // ),
             const SizedBox(height: 16),
             Text('樣本數：$_sampleCount / ${(_targetHz * _durationSec).round()}'),
             const SizedBox(height: 12),
